@@ -13,6 +13,21 @@
 
 
 
+
+## v2.0.0-beta.0 (2026-09-14)
+
+#### :rocket: Enhancement
+* [#196](https://github.com/gleanwork/mcp-server-tester/pull/196) experimental: Add external host driver runtime ([@steve-calvert-glean](https://github.com/steve-calvert-glean))
+
+#### :bug: Bug Fix
+* [#270](https://github.com/gleanwork/mcp-server-tester/pull/270) fix(mcp): omit empty auth provider transport option ([@chenhao-yang-glean](https://github.com/chenhao-yang-glean))
+* [#269](https://github.com/gleanwork/mcp-server-tester/pull/269) fix(evals): reuse source host for first comparison arm ([@chenhao-yang-glean](https://github.com/chenhao-yang-glean))
+
+#### Committers: 2
+- Chenhao Yang ([@chenhao-yang-glean](https://github.com/chenhao-yang-glean))
+- Steve Calvert ([@steve-calvert-glean](https://github.com/steve-calvert-glean))
+
+
 ## v1.1.1 (2026-07-10)
 
 #### :rocket: Enhancement
