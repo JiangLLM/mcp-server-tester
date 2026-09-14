@@ -7,6 +7,7 @@ import type {
   ExternalHostRunResult,
 } from '../types.js';
 import { driverToSlug, hostTypeFromDriver } from '../driverIdentity.js';
+import { submitMacCoworkPrompt } from './macCowork.js';
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_SETTLE_DELAY_MS = 500;
@@ -15,6 +16,7 @@ const DEFAULT_APP_READY_TIMEOUT_MS = 30_000;
 const DEFAULT_APPLESCRIPT_TIMEOUT_MS = 30_000;
 const DEFAULT_APPLESCRIPT_MAX_BUFFER = 64 * 1024 * 1024;
 const APP_READY_POLL_INTERVAL_MS = 200;
+const macosAppLeaseTails = new Map<string, Promise<void>>();
 
 export const MACOS_DESKTOP_CAPABILITIES: ExternalHostCapabilityImplementation[] =
   [
@@ -132,6 +134,7 @@ interface MacosAppLifecycleState {
   processIds: number[];
   launchAttempted: boolean;
   quitAfterRun: boolean;
+  releaseLease: () => void;
 }
 
 export function buildMacosAppLaunchArgs(
@@ -162,10 +165,22 @@ async function setupMacosAppLifecycleCapability({
     Object.keys(environment).length > 0;
   const quitAfterRun =
     runBooleanOption(config, binding, 'quitAfterRun') ?? true;
+  const releaseLease = await acquireMacosAppLease(appName);
+  let lifecycleState: MacosAppLifecycleState | undefined;
 
   try {
     const initialProcessIds = await listMacosAppProcessIds(appName);
     const running = initialProcessIds.length > 0;
+    lifecycleState = {
+      appName,
+      initialProcessIds,
+      processIds: [],
+      launchAttempted: false,
+      quitAfterRun,
+      releaseLease,
+    };
+    state.data[macosAppLifecycleStateKey(appName)] = lifecycleState;
+
     if (running && requireFreshInstance) {
       return desktopFailureResult({
         config,
@@ -179,39 +194,31 @@ async function setupMacosAppLifecycleCapability({
       });
     }
 
-    const lifecycleState: MacosAppLifecycleState = {
-      appName,
-      initialProcessIds,
-      processIds: [],
-      launchAttempted: false,
-      quitAfterRun,
-    };
-    state.data[macosAppLifecycleStateKey(appName)] = lifecycleState;
-
     if (!running) {
       lifecycleState.launchAttempted = true;
       await execFileAsync(
         '/usr/bin/open',
         buildMacosAppLaunchArgs(appName, environment),
         {
-          timeout: 15_000,
+          timeout: Math.min(15_000, remainingRunMs(run)),
         }
       );
       lifecycleState.processIds = await waitForMacosAppStart(
         appName,
         initialProcessIds,
-        15_000
+        Math.min(15_000, remainingRunMs(run))
       );
     }
   } catch (err) {
-    const lifecycleState = state.data[macosAppLifecycleStateKey(appName)] as
-      | MacosAppLifecycleState
-      | undefined;
-    if (lifecycleState?.launchAttempted) {
-      lifecycleState.processIds = (
+    const currentLifecycleState = state.data[
+      macosAppLifecycleStateKey(appName)
+    ] as MacosAppLifecycleState | undefined;
+    if (currentLifecycleState?.launchAttempted) {
+      currentLifecycleState.processIds = (
         await listMacosAppProcessIds(appName).catch(() => [])
       ).filter(
-        (processId) => !lifecycleState.initialProcessIds.includes(processId)
+        (processId) =>
+          !currentLifecycleState.initialProcessIds.includes(processId)
       );
     }
     return desktopFailureResult({
@@ -237,19 +244,44 @@ async function teardownMacosAppLifecycleCapability({
   const lifecycleState = state.data[macosAppLifecycleStateKey(appName)] as
     | MacosAppLifecycleState
     | undefined;
-  if (!lifecycleState || lifecycleState.processIds.length === 0) {
+  if (!lifecycleState) {
     return;
   }
 
-  if (lifecycleState.quitAfterRun) {
-    signalProcesses(lifecycleState.processIds, 'SIGTERM');
-    try {
-      await waitForProcessesToExit(lifecycleState.processIds, 5_000);
-    } catch {
-      signalProcesses(lifecycleState.processIds, 'SIGKILL');
-      await waitForProcessesToExit(lifecycleState.processIds, 5_000);
+  try {
+    if (lifecycleState.quitAfterRun && lifecycleState.processIds.length > 0) {
+      signalProcesses(lifecycleState.processIds, 'SIGTERM');
+      try {
+        await waitForProcessesToExit(lifecycleState.processIds, 5_000);
+      } catch {
+        signalProcesses(lifecycleState.processIds, 'SIGKILL');
+        await waitForProcessesToExit(lifecycleState.processIds, 5_000);
+      }
     }
+  } finally {
+    lifecycleState.releaseLease();
   }
+}
+
+async function acquireMacosAppLease(appName: string): Promise<() => void> {
+  const previous = macosAppLeaseTails.get(appName) ?? Promise.resolve();
+  let releaseCurrent!: () => void;
+  const current = new Promise<void>((resolve) => {
+    releaseCurrent = resolve;
+  });
+  const tail = previous.then(() => current);
+  macosAppLeaseTails.set(appName, tail);
+  await previous;
+
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    releaseCurrent();
+    if (macosAppLeaseTails.get(appName) === tail) {
+      macosAppLeaseTails.delete(appName);
+    }
+  };
 }
 
 function macosAppLifecycleStateKey(appName: string): string {
@@ -280,17 +312,37 @@ async function listMacosAppProcessIds(appName: string): Promise<number[]> {
     const result = await execFileAsync('/usr/bin/pgrep', ['-x', appName], {
       timeout: 5_000,
     });
-    return result.stdout
-      .trim()
-      .split(/\s+/)
-      .map(Number)
-      .filter(Number.isInteger);
+    return parseProcessIds(result.stdout);
   } catch (err) {
-    if (processExitCode(err) === 1) {
+    if (processExitCode(err) === 1 && !processEnumerationDiagnostic(err)) {
       return [];
     }
-    throw err;
+
+    // pgrep can be unavailable in restricted macOS contexts (for example when
+    // sysmond cannot service the process-list request). Fall back to ps rather
+    // than treating an enumeration failure as proof that the app is absent.
+    try {
+      const result = await execFileAsync('/bin/ps', ['-axo', 'pid=,comm='], {
+        timeout: 5_000,
+      });
+      return result.stdout
+        .split('\n')
+        .map((line) => {
+          const match = /^\\s*(\\d+)\\s+(.+?)\\s*$/.exec(line);
+          if (!match || match[2] !== appName) return undefined;
+          return Number(match[1]);
+        })
+        .filter((processId): processId is number =>
+          Number.isInteger(processId)
+        );
+    } catch {
+      throw err;
+    }
   }
+}
+
+function parseProcessIds(output: string): number[] {
+  return output.trim().split(/\s+/).map(Number).filter(Number.isInteger);
 }
 
 function signalProcesses(processIds: number[], signal: NodeJS.Signals): void {
@@ -375,20 +427,31 @@ async function submitPromptCapability({
   try {
     const appName =
       runStringOption(config, binding, 'appName') ?? state.displayName;
-    await submitPromptToMacosDesktopApp(run.submittedScenario, {
-      appName,
-      createNewConversation: shouldCreateNewConversation(
-        binding.with?.createNewConversation,
-        config
-      ),
-      settleDelayMs: runNumberOption(config, binding, 'settleDelayMs'),
-      submitButtonNames: stringArrayOption(binding.with, 'submitButtonNames'),
-      promptElementDescription: runStringOption(
-        config,
-        binding,
-        'promptElementDescription'
-      ),
-    });
+    if (isClaudeCoworkDriver(state.driver)) {
+      const submission = await submitMacCoworkPrompt(run.submittedScenario, {
+        appName,
+        marker: run.marker,
+        openFreshComposer: true,
+        settleDelayMs: runNumberOption(config, binding, 'settleDelayMs'),
+        deadlineAt: run.startedAtMs + run.timeoutMs,
+      });
+      state.data.macCoworkCheckpoint = submission.checkpoint;
+    } else {
+      await submitPromptToMacosDesktopApp(run.submittedScenario, {
+        appName,
+        createNewConversation: shouldCreateNewConversation(
+          binding.with?.createNewConversation,
+          config
+        ),
+        settleDelayMs: runNumberOption(config, binding, 'settleDelayMs'),
+        submitButtonNames: stringArrayOption(binding.with, 'submitButtonNames'),
+        promptElementDescription: runStringOption(
+          config,
+          binding,
+          'promptElementDescription'
+        ),
+      });
+    }
   } catch (err) {
     const message = formatError(err);
     return desktopFailureResult({
@@ -571,6 +634,18 @@ end run
 `;
 }
 
+function isClaudeCoworkDriver(driver: {
+  provider: string;
+  product: string;
+  surface: string;
+}): boolean {
+  return (
+    driver.provider === 'anthropic' &&
+    driver.product === 'claude' &&
+    driver.surface === 'cowork'
+  );
+}
+
 function shouldCreateNewConversation(
   option: unknown,
   config: { options?: Record<string, unknown> }
@@ -733,6 +808,26 @@ function processExitCode(err: unknown): string | number | undefined {
   return typeof code === 'string' || typeof code === 'number'
     ? code
     : undefined;
+}
+
+function processStderr(err: unknown): string {
+  if (typeof err !== 'object' || err === null || !('stderr' in err)) {
+    return '';
+  }
+  return typeof err.stderr === 'string' ? err.stderr : '';
+}
+
+function processEnumerationDiagnostic(err: unknown): boolean {
+  const message = `${formatError(err)} ${processStderr(err)}`.toLowerCase();
+  return (
+    message.includes('cannot get process list') ||
+    message.includes('sysmond') ||
+    message.includes('process enumeration')
+  );
+}
+
+function remainingRunMs(run: ExternalHostCapabilityContext['run']): number {
+  return Math.max(1, run.startedAtMs + run.timeoutMs - Date.now());
 }
 
 function delay(ms: number): Promise<void> {

@@ -157,18 +157,23 @@ async function activateCoworkSurfaceCapability({
   const appReadyTimeoutMs =
     runNumberOption(config, binding, 'appReadyTimeoutMs') ?? 60_000;
   const script = buildActivateCoworkSurfaceScript(appName, settleDelayMs);
+  const deadlineAt = run.startedAtMs + run.timeoutMs;
+  const remainingTimeout = () =>
+    Math.max(1, Math.min(appReadyTimeoutMs, deadlineAt - Date.now()));
   try {
-    await ensureMacosDesktopAppReady(appName, appReadyTimeoutMs);
+    await ensureMacosDesktopAppReady(appName, remainingTimeout());
     await waitForClaudeAccessibilityText({
       appName,
-      timeoutMs: appReadyTimeoutMs,
+      timeoutMs: remainingTimeout(),
       predicate: isClaudeDesktopNavigationAccessibilityText,
       expectation: 'Home and Code navigation',
     });
-    await runAppleScript(script, { timeoutMs: 8_000 });
+    await runAppleScript(script, {
+      timeoutMs: Math.max(1, Math.min(8_000, deadlineAt - Date.now())),
+    });
     await waitForClaudeAccessibilityText({
       appName,
-      timeoutMs: appReadyTimeoutMs,
+      timeoutMs: remainingTimeout(),
       predicate: isClaudeCoworkAccessibilityText,
       expectation: 'Cowork Home composer',
     });
@@ -320,7 +325,10 @@ async function captureClaudeChatAccessibilityResultCapability({
       driver: state.driver,
       displayName: state.displayName,
       capabilitiesUsed: state.capabilitiesUsed,
-      timeoutMs: run.timeoutMs,
+      timeoutMs: Math.max(
+        1,
+        Math.min(run.timeoutMs, run.startedAtMs + run.timeoutMs - Date.now())
+      ),
       appName: runStringOption(config, binding, 'appName'),
     });
   } catch (err) {
@@ -375,7 +383,10 @@ async function captureClaudeCoworkAgentTraceCapability({
       marker: run.marker,
       correlation: run.correlation,
       snapshot,
-      timeoutMs: run.timeoutMs,
+      timeoutMs: Math.max(
+        1,
+        Math.min(run.timeoutMs, run.startedAtMs + run.timeoutMs - Date.now())
+      ),
       startedAtMs: run.startedAtMs,
     });
   } catch (err) {

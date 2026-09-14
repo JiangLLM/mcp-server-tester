@@ -48,7 +48,7 @@ The built-in Cowork driver requires:
 - no running Claude process when a custom lifecycle capability requests a fresh environment;
 - serialized Cowork eval execution, with no manual Claude launch during a run.
 
-The driver launches Claude, waits for a real window and hydrated navigation, selects the current **Home** Cowork surface, focuses and verifies the Cowork composer semantically, submits the marked prompt, restores the previous clipboard content, and correlates the result with Claude's local-agent trace.
+The driver launches Claude, waits for a real window and hydrated navigation, selects the current **Home** Cowork surface, opens a fresh Cowork composer through `claude://cowork/new`, and focuses and verifies the composer semantically. The Mac submission path uses UTF-8 clipboard paste, verifies the prompt through Accessibility before pressing Return, records an at-most-once submission checkpoint, restores the previous clipboard content, and never resubmits after an ambiguous Return. Claude's native local-agent session remains authoritative for the final response, tool calls, usage, cost, and trace telemetry.
 
 Cowork profile isolation is not available through the built-in driver. In the tested Claude Desktop build, redirecting `CLAUDE_CONFIG_DIR` made Cowork session creation/correlation unreliable. Full Electron profile isolation uses `CLAUDE_USER_DATA_DIR`, which packaged Claude accepts only with Anthropic's signed E2E authorization. Cowork also does not load arbitrary local MCP servers from `.claude.json`.
 

@@ -318,6 +318,7 @@ describe('external host capability runtime', () => {
 
     expect(result).toMatchObject({
       success: false,
+      response: 'completed',
       error: expect.stringContaining('cleanup exploded'),
       externalHost: {
         failureKind: 'cleanup_failed',

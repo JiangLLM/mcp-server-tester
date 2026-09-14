@@ -369,6 +369,7 @@ function cleanupFailure(
     .map(formatError)
     .join('; ')}`;
   return {
+    ...result,
     success: false,
     toolCalls: result.toolCalls,
     error: result.success
