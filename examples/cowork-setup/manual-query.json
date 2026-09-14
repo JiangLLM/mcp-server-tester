@@ -1,0 +1,10 @@
+{
+  "name": "manual-cowork-query",
+  "cases": [
+    {
+      "id": "onboarding-documents",
+      "mode": "host",
+      "scenario": "Find documents about onboarding."
+    }
+  ]
+}

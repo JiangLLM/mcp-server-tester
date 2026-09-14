@@ -1450,19 +1450,30 @@ async function runWithConcurrency<T>(
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const results: T[] = new Array(tasks.length);
   let index = 0;
+  let failed = false;
+  let firstError: unknown;
 
   async function worker() {
     // `index++` is safe here: JavaScript's event loop is single-threaded, so the
     // read-modify-write of `index` completes atomically before any `await` yields
     // to another worker. Each worker captures a unique `i` before awaiting the task.
-    while (index < tasks.length) {
+    while (!failed && index < tasks.length) {
       const i = index++;
-      results[i] = await tasks[i]!();
+      try {
+        results[i] = await tasks[i]!();
+      } catch (error) {
+        if (!failed) firstError = error;
+        failed = true;
+        throw error;
+      }
     }
   }
 
   const workerCount = Math.min(limit, tasks.length);
-  await Promise.all(Array.from({ length: workerCount }, worker));
+  // Stop dispatch on failure, but drain every started case (including its
+  // iterations/assertions) before callers can dispose shared host resources.
+  await Promise.allSettled(Array.from({ length: workerCount }, worker));
+  if (failed) throw firstError;
   return results;
 }
 

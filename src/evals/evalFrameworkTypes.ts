@@ -2,6 +2,7 @@ import type { ZodType } from 'zod';
 import type { EvalDataset, EvalCase } from './datasetTypes.js';
 import type { EvalCaseResult } from '../types/reporter.js';
 import type { UsageMetrics } from '../types/index.js';
+import type { ExternalHostMetadata } from './externalHost/types.js';
 import type { MCPConfig } from '../config/mcpConfig.js';
 import type {
   DatasetConfig,
@@ -52,6 +53,10 @@ export interface HostRunInput {
 
 export interface HostRunContext {
   manifest: EvalManifest;
+  /** Validated suite defaults before arm overlay, for nested-option inheritance. */
+  baseManifest?: EvalManifest;
+  /** Explicit caller-provided file, if any; never inferred from the filesystem. */
+  secretsFile?: string;
   arm?: EvalArm;
   /** Runtime-only environment isolated per suite. */
   env?: Record<string, string | undefined>;
@@ -72,10 +77,26 @@ export interface HostEvent {
 
 /** One execution trace. Hosts never return evaluation verdicts. */
 export interface HostRunResult {
+  /** Preserve native driver provenance without promoting it to verified inventory. */
+  externalHost?: ExternalHostMetadata;
   finalText: string;
   events: HostEvent[];
   error?: string;
   usage?: UsageMetrics;
+}
+
+/**
+ * Execution-local host resources, shared by equal effective host configurations
+ * across cases, iterations, and datasets in one evaluation arm. The suite owns
+ * disposal; sessions must not be shared across arms or suite runs.
+ */
+export interface PreparedHostSession {
+  run(
+    input: HostRunInput,
+    config: HostConfig,
+    context: HostRunContext
+  ): Promise<HostRunResult>;
+  dispose(): Promise<void>;
 }
 
 /** Public host extension point. */
@@ -85,6 +106,19 @@ export interface HostDefinition {
   createConfig?(options?: Record<string, unknown>): MCPHostConfig;
   /** Missing evidence declarations are treated as unverified. */
   readonly evidence?: HostEvidence;
+  /** Maximum supported case concurrency. Validated for all selected cases before execution. */
+  readonly maxConcurrency?: number;
+  /**
+   * Automatically preferred over run when present; run is not required.
+   * Prepared lazily before the first host case (never for direct/dry runs).
+   * Must self-clean partial resources on rejection. Configuration switches
+   * dispose the previous session first and require serial case execution.
+   */
+  prepareSession?(
+    input: Omit<HostRunInput, 'scenario'>,
+    config: HostConfig,
+    context: HostRunContext
+  ): Promise<PreparedHostSession>;
   run?(
     input: HostRunInput,
     config: HostConfig,

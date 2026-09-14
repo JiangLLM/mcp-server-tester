@@ -1,6 +1,7 @@
 import { manifestIdentity } from './manifestIdentity.js';
 import { sumUsage } from '../utils/usageUtils.js';
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -21,6 +22,9 @@ import type {
   EvaluationArmResult,
   EvaluationSummary,
   HostDefinition,
+  HostRunContext,
+  HostRunInput,
+  PreparedHostSession,
   RunTelemetry,
 } from './evalFrameworkTypes.js';
 import { registerBuiltinDatasetSources } from './builtinDatasetSources.js';
@@ -178,6 +182,132 @@ function resolveHost(
     ),
   });
   return { definition, declaration, config };
+}
+
+interface HostSessionConfig {
+  declaration: HostConfig;
+  mcpHostConfig: HostRunContext['mcpHostConfig'];
+}
+
+function usesSuiteHost(evalCase: EvalCase): boolean {
+  return evalCase.mode === 'host' || evalCase.mode === 'mcp_host';
+}
+
+/** One resource owner per arm, including a single-flight preparation promise. */
+function createArmHostSession() {
+  let active:
+    | { config: HostSessionConfig; session: Promise<PreparedHostSession> }
+    | undefined;
+  let cleanupFailure: unknown;
+  let cleanupFailed = false;
+
+  async function dispose(): Promise<void> {
+    if (cleanupFailed) throw cleanupFailure;
+    const previous = active;
+    active = undefined;
+    if (!previous) return;
+    // A rejected preparation owns its partial cleanup by contract.
+    const session = await previous.session.catch(() => undefined);
+    if (!session) return;
+    try {
+      await session.dispose();
+    } catch (error) {
+      cleanupFailed = true;
+      cleanupFailure = error;
+      throw error;
+    }
+  }
+
+  async function run(
+    definition: HostDefinition,
+    input: HostRunInput,
+    declaration: HostConfig,
+    context: HostRunContext
+  ) {
+    if (cleanupFailed) throw cleanupFailure;
+    const config = { declaration, mcpHostConfig: context.mcpHostConfig };
+    if (active && !isDeepStrictEqual(active.config, config)) {
+      // Preflight rejects concurrent switches; serial switches must release
+      // the previous host before the replacement can acquire resources.
+      await dispose();
+    }
+    if (definition.prepareSession) {
+      if (!active) {
+        active = {
+          config,
+          session: Promise.resolve().then(() =>
+            definition.prepareSession!(
+              { servers: input.servers, env: input.env },
+              declaration,
+              context
+            )
+          ),
+        };
+      }
+      const session = await active.session;
+      return session.run(input, declaration, context);
+    }
+    if (!definition.run) {
+      throw new Error(
+        `Host ${declaration.type} must expose run() or prepareSession() for per-case dispatch.`
+      );
+    }
+    return definition.run(input, declaration, context);
+  }
+
+  return { run, dispose };
+}
+
+/** Validate every selected arm before any execution or session preparation. */
+function validateHostConcurrency(
+  datasets: EvalDataset[],
+  declaration: HostConfig,
+  concurrency: number
+): void {
+  const cases = datasets.flatMap((dataset) => dataset.cases);
+  const configs = cases.filter(usesSuiteHost).map((evalCase) => ({
+    declaration: evalCase.host ?? declaration,
+    mcpHostConfig: evalCase.mcpHostConfig,
+  }));
+  const hasPreparedHost = configs.some(
+    (config) =>
+      typeof getHost(config.declaration.type).prepareSession === 'function'
+  );
+  if (
+    cases.some(
+      (evalCase) =>
+        evalCase.mode === 'external_host' &&
+        (hasPreparedHost ||
+          typeof getHost((evalCase.host ?? declaration).type).prepareSession ===
+            'function')
+    )
+  ) {
+    // Legacy dispatch bypasses the session owner even when its own effective
+    // host is run-only. It cannot safely share an arm with a prepared override.
+    throw new Error(
+      'Legacy external_host cases bypass the prepared host lifecycle; use mode: "host" and select the driver in host configuration.'
+    );
+  }
+  for (const config of configs) {
+    const definition = getHost(config.declaration.type);
+    if (
+      definition.maxConcurrency !== undefined &&
+      concurrency > definition.maxConcurrency
+    ) {
+      throw new Error(
+        `Host ${definition.name} supports maxConcurrency ${definition.maxConcurrency}; requested ${concurrency}.`
+      );
+    }
+  }
+  if (
+    concurrency > 1 &&
+    hasPreparedHost &&
+    configs.some((config) => !isDeepStrictEqual(config, configs[0]))
+  ) {
+    throw new Error(
+      'Concurrent host/config switching with prepared sessions is unsupported; use concurrency: 1 or separate arms.'
+    );
+  }
 }
 
 function countToolCalls(results: EvalCaseResult[]): number {
@@ -397,7 +527,7 @@ export async function runEvalSuite(
     }))
   );
 
-  for (const arm of arms) {
+  const plans = arms.map((arm) => {
     const servers = options.mcpConfig
       ? [options.mcpConfig]
       : (arm.servers ?? manifest.servers ?? []);
@@ -419,10 +549,6 @@ export async function runEvalSuite(
       name: manifest.name,
       datasets: manifest.datasets,
     };
-    const sourceResults: Array<{
-      name: string;
-      result: EvalRunnerResult;
-    }> = [];
     const rawArm = rawManifest.arms?.find(
       (candidate) => candidate.name === arm.name
     ) ?? { name: arm.name };
@@ -431,57 +557,87 @@ export async function runEvalSuite(
       ...rawManifest.host,
       ...rawArm.host,
     };
-    const client = host.definition.run
-      ? undefined
-      : resolvedServers.length === 1
-        ? await createMCPClientForConfig(resolvedServers[0]!)
-        : undefined;
+    const plannedDatasets = canonicalDatasets.map(({ source, dataset }) => {
+      const executionDataset = selectEvalCases(dataset, manifest);
+      const template = arm.scenarioTemplate ?? manifest.scenarioTemplate;
+      const effectiveDataset: EvalDataset = {
+        ...executionDataset,
+        cases: executionDataset.cases.map((evalCase) => ({
+          ...evalCase,
+          ...(evalCase.host
+            ? {
+                host: parseHostConfig(
+                  { ...rawDeclaration, ...evalCase.host },
+                  rawManifest
+                ),
+              }
+            : {}),
+          ...(effectiveManifest.judges?.length
+            ? {
+                expect: EvalExpectBlockSchema.parse({
+                  ...evalCase.expect,
+                  passesJudge: configuredJudges(
+                    evalCase,
+                    effectiveManifest.judges,
+                    (rawArm.judges ?? rawManifest.judges ?? []) as Array<
+                      Record<string, unknown>
+                    >
+                  ),
+                }),
+              }
+            : {}),
+          ...(template && evalCase.scenario
+            ? {
+                scenario: template.replaceAll(
+                  '{{scenario}}',
+                  evalCase.scenario
+                ),
+              }
+            : {}),
+        })),
+      };
+      return { source, executionDataset, effectiveDataset };
+    });
+    validateHostConcurrency(
+      plannedDatasets.map(({ effectiveDataset }) => effectiveDataset),
+      host.declaration,
+      manifest.concurrency ?? 1
+    );
+    return {
+      arm,
+      servers,
+      resolvedServers,
+      host,
+      effectiveManifest,
+      plannedDatasets,
+    };
+  });
+
+  for (const {
+    arm,
+    servers,
+    resolvedServers,
+    host,
+    effectiveManifest,
+    plannedDatasets,
+  } of plans) {
+    const sourceResults: Array<{ name: string; result: EvalRunnerResult }> = [];
+    const sessions = createArmHostSession();
+    const client =
+      host.definition.run || host.definition.prepareSession
+        ? undefined
+        : resolvedServers.length === 1
+          ? await createMCPClientForConfig(resolvedServers[0]!)
+          : undefined;
     const mcp = client
       ? createMCPFixture(client, undefined, { authType: 'api-token' })
       : undefined;
-
     try {
-      for (const { source, dataset } of canonicalDatasets) {
-        const executionDataset = selectEvalCases(dataset, manifest);
-        const template = arm.scenarioTemplate ?? manifest.scenarioTemplate;
-        const effectiveDataset: EvalDataset = {
-          ...executionDataset,
-          cases: executionDataset.cases.map((evalCase) => ({
-            ...evalCase,
-            ...(evalCase.host
-              ? {
-                  host: parseHostConfig(
-                    { ...rawDeclaration, ...evalCase.host },
-                    rawManifest
-                  ),
-                }
-              : {}),
-            ...(effectiveManifest.judges?.length
-              ? {
-                  expect: EvalExpectBlockSchema.parse({
-                    ...evalCase.expect,
-                    passesJudge: configuredJudges(
-                      evalCase,
-                      effectiveManifest.judges,
-                      (rawArm.judges ?? rawManifest.judges ?? []) as Array<
-                        Record<string, unknown>
-                      >
-                    ),
-                  }),
-                }
-              : {}),
-            ...(template && evalCase.scenario
-              ? {
-                  scenario: template.replaceAll(
-                    '{{scenario}}',
-                    evalCase.scenario
-                  ),
-                }
-              : {}),
-          })),
-        };
-        const sourceConfig = source;
-        const runHost = host.definition.run?.bind(host.definition);
+      for (const {
+        source,
+        executionDataset,
+        effectiveDataset,
+      } of plannedDatasets) {
         const result = await runEvalDataset(
           {
             dataset: effectiveDataset,
@@ -489,73 +645,72 @@ export async function runEvalSuite(
             defaultLlmIterations: manifest.iterations,
             toolOverrides: arm.toolOverrides ?? manifest.toolOverrides,
             toolMap: arm.toolMap ?? manifest.toolMap,
-            ...(runHost
-              ? {
-                  executeCase: async (evalCase) => {
-                    const declaration = evalCase.host ?? host.declaration;
-                    if ((evalCase.mode ?? 'direct') === 'direct') {
-                      const selected =
-                        resolvedServers.length === 1
-                          ? resolvedServers[0]
-                          : resolvedServers.find(
-                              (server) =>
-                                server.label &&
-                                evalCase.toolName?.startsWith(
-                                  `${server.label}.`
-                                )
-                            );
-                      if (!selected)
-                        throw new Error(
-                          'Direct cases require one server or a label-qualified tool name.'
-                        );
-                      const directClient =
-                        await createMCPClientForConfig(selected);
-                      try {
-                        const toolName =
-                          selected.label &&
-                          evalCase.toolName?.startsWith(`${selected.label}.`)
-                            ? evalCase.toolName.slice(selected.label.length + 1)
-                            : evalCase.toolName;
-                        return await executeToolCall(
-                          { ...evalCase, toolName },
-                          createMCPFixture(directClient)
-                        );
-                      } finally {
-                        await closeMCPClient(directClient);
-                      }
-                    }
-                    const definition = getHost(declaration.type);
-                    if (!definition.run)
-                      throw new Error(
-                        `Host ${declaration.type} must expose run() for per-case dispatch.`
+            executeCase: async (evalCase) => {
+              const declaration = evalCase.host ?? host.declaration;
+              if ((evalCase.mode ?? 'direct') === 'direct') {
+                if (mcp) return executeToolCall(evalCase, mcp);
+                const selected =
+                  resolvedServers.length === 1
+                    ? resolvedServers[0]
+                    : resolvedServers.find(
+                        (server) =>
+                          server.label &&
+                          evalCase.toolName?.startsWith(`${server.label}.`)
                       );
-                    const trace = await definition.run(
-                      {
-                        scenario: evalCase.scenario ?? '',
-                        servers: resolvedServers,
-                        env,
-                      },
-                      declaration,
-                      {
-                        manifest: effectiveManifest,
-                        arm,
-                        env,
-                        mcpHostConfig: evalCase.mcpHostConfig,
-                      }
-                    );
-                    return hostTraceToExecution(
-                      trace,
-                      definition.evidence ?? 'none',
-                      resolvedServers
-                    );
-                  },
+                if (!selected)
+                  throw new Error(
+                    'Direct cases require one server or a label-qualified tool name.'
+                  );
+                const directClient = await createMCPClientForConfig(selected);
+                try {
+                  const toolName =
+                    selected.label &&
+                    evalCase.toolName?.startsWith(`${selected.label}.`)
+                      ? evalCase.toolName.slice(selected.label.length + 1)
+                      : evalCase.toolName;
+                  return await executeToolCall(
+                    { ...evalCase, toolName },
+                    createMCPFixture(directClient)
+                  );
+                } finally {
+                  await closeMCPClient(directClient);
                 }
-              : {}),
+              }
+              const definition = getHost(declaration.type);
+              if (!definition.run && !definition.prepareSession && mcp) {
+                await sessions.dispose();
+                return executeToolCall(evalCase, mcp);
+              }
+              const trace = await sessions.run(
+                definition,
+                {
+                  scenario: evalCase.scenario ?? '',
+                  servers: resolvedServers,
+                  env,
+                },
+                declaration,
+                {
+                  manifest: effectiveManifest,
+                  baseManifest: manifest,
+                  secretsFile: options.secretsFile
+                    ? path.resolve(rootDir, options.secretsFile)
+                    : undefined,
+                  arm,
+                  env,
+                  mcpHostConfig: evalCase.mcpHostConfig,
+                }
+              );
+              return hostTraceToExecution(
+                trace,
+                definition.evidence ?? 'none',
+                resolvedServers
+              );
+            },
           },
           { mcp }
         );
         allDatasets.push({
-          source: sourceConfig,
+          source,
           dataset: executionDataset,
           result,
         });
@@ -563,7 +718,11 @@ export async function runEvalSuite(
         allResults.push(...result.caseResults);
       }
     } finally {
-      if (client) await closeMCPClient(client);
+      try {
+        await sessions.dispose();
+      } finally {
+        if (client) await closeMCPClient(client);
+      }
     }
 
     armResults.push(summarizeArm(arm, servers, sourceResults));

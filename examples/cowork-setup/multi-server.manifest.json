@@ -1,0 +1,19 @@
+{
+  "name": "cowork-multi-server-manual",
+  "datasets": [{ "type": "file", "path": "./manual-query.json" }],
+  "host": { "type": "cowork" },
+  "servers": [
+    {
+      "transport": "http",
+      "label": "search",
+      "serverUrl": "https://search.example.test/mcp",
+      "auth": { "accessTokenEnv": "SEARCH_MCP_TOKEN" }
+    },
+    {
+      "transport": "http",
+      "label": "calendar",
+      "serverUrl": "https://calendar.example.test/mcp",
+      "auth": { "accessTokenEnv": "CALENDAR_MCP_TOKEN" }
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "name": "cowork-single-server-manual",
+  "datasets": [{ "type": "file", "path": "./manual-query.json" }],
+  "host": { "type": "cowork" },
+  "servers": [
+    {
+      "transport": "http",
+      "label": "search",
+      "serverUrl": "https://search.example.test/mcp",
+      "auth": { "accessTokenEnv": "SEARCH_MCP_TOKEN" }
+    }
+  ]
+}
