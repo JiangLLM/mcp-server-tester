@@ -705,6 +705,8 @@ const result2 = validateText(response, 'hello', { caseSensitive: false });
 ### `validatePattern(response, patterns, options?)`
 
 Checks that the response matches all expected regex patterns.
+Each pattern check starts at index zero and leaves the supplied `RegExp` object's
+`lastIndex` unchanged. You can safely reuse global and sticky patterns.
 
 **Parameters:**
 

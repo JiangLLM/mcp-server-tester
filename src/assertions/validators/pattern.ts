@@ -12,6 +12,7 @@ import { extractText } from './utils.js';
  *
  * Extracts text from the response and checks that each pattern matches.
  * Patterns can be strings (which are compiled to RegExp) or RegExp objects.
+ * Each check starts at index zero and leaves the supplied RegExp's lastIndex unchanged.
  *
  * @param response - The response to validate
  * @param patterns - Expected pattern(s) to match
@@ -92,7 +93,8 @@ function toRegExp(pattern: string | RegExp, caseInsensitive: boolean): RegExp {
     if (caseInsensitive && !pattern.flags.includes('i')) {
       return new RegExp(pattern.source, pattern.flags + 'i');
     }
-    return pattern;
+    // Keep global and sticky patterns independent of the caller's lastIndex.
+    return new RegExp(pattern.source, pattern.flags);
   }
 
   // Compile string to RegExp

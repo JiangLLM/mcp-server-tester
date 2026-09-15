@@ -14,6 +14,13 @@
 
 
 
+## Unreleased
+
+### Bug Fixes
+
+- Make each pattern check start at index zero. Keep all regex flags and leave
+  the original regex unchanged.
+
 ## v2.0.0-beta.0 (2026-09-14)
 
 #### :rocket: Enhancement
