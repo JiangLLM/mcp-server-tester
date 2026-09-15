@@ -3,7 +3,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
-  buildActivateCoworkSurfaceScript,
   buildClaudeTraceMetadata,
   findMatchingClaudeSessions,
   extractAccessibilityResponse,
@@ -34,11 +33,7 @@ async function writeJsonl(path: string, events: unknown[]): Promise<void> {
 }
 
 describe('anthropicClaude trace parsing', () => {
-  it('activates the current Cowork Home surface and verifies its semantic controls', () => {
-    const script = buildActivateCoworkSurfaceScript('Claude', 700);
-
-    expect(script).toContain('keystroke "1" using command down');
-    expect(script).not.toContain('keystroke "2" using command down');
+  it('recognizes the current Cowork Home surface and its semantic controls', () => {
     expect(
       isClaudeDesktopNavigationAccessibilityText('Home\nCode\nQuick task')
     ).toBe(true);

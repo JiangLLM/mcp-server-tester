@@ -1,17 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
   accessibilityTextContainsPrompt,
-  buildEnsureFrontmostScript,
-  buildPasteIntoFocusedComposerScript,
-  buildPressReturnScript,
   isFreshMacCoworkComposerText,
   openFreshMacCoworkComposer,
   submitMacCoworkPrompt,
   type MacCoworkCheckpoint,
 } from './macCowork.js';
+import type { MacComputerUseApp } from './macComputerUse.js';
 
-describe('Mac Cowork driver', () => {
-  it('recognizes a fresh Cowork composer from semantic accessibility text', () => {
+describe('Mac Cowork Computer Use driver', () => {
+  it('recognizes a fresh Cowork composer from the CUA observation text', () => {
     expect(
       isFreshMacCoworkComposerText(
         'Home\nWrite your prompt to Claude\nAutomatically approve'
@@ -42,19 +40,29 @@ describe('Mac Cowork driver', () => {
     ).toBe(false);
   });
 
-  it('opens the Cowork deep link and waits for the fresh composer', async () => {
+  it('opens the Cowork deep link and waits for a fresh CUA composer', async () => {
     const opened: string[] = [];
     let observations = 0;
+    const app: MacComputerUseApp = {
+      getAXStateAndScreenshot: async () => {
+        observations += 1;
+        return {
+          state:
+            observations === 1
+              ? 'Home\nLoading Claude'
+              : 'Home\nWrite your prompt to Claude\nAutomatically approve',
+        };
+      },
+      click: async () => undefined,
+      setValue: async () => undefined,
+      pressKey: async () => undefined,
+    };
+
     const text = await openFreshMacCoworkComposer('Claude', {
+      app,
       timeoutMs: 500,
       openUrl: async (url) => {
         opened.push(url);
-      },
-      readDescriptions: async () => {
-        observations += 1;
-        return observations === 1
-          ? 'Home\nLoading Claude'
-          : 'Home\nWrite your prompt to Claude\nAutomatically approve';
       },
     });
 
@@ -63,7 +71,7 @@ describe('Mac Cowork driver', () => {
     expect(text).toContain('Automatically approve');
   });
 
-  it('does not submit twice when the first Return becomes ambiguous', async () => {
+  it('does not submit twice when the first CUA click becomes ambiguous', async () => {
     const calls: string[] = [];
     const checkpoint: MacCoworkCheckpoint = {
       phase: 'created',
@@ -71,47 +79,53 @@ describe('Mac Cowork driver', () => {
       prompt: 'Reply with exactly: acknowledged.',
       marker: 'MCP_SERVER_TESTER_TEST',
     };
+    let observedText =
+      'Write your prompt to Claude Reply with exactly: acknowledged.';
+
+    const app: MacComputerUseApp = {
+      getAXStateAndScreenshot: async () => ({ state: observedText }),
+      click: async () => {
+        calls.push('click-send');
+        observedText = 'Cowork task running';
+        throw new Error('CUA click reported a transient failure');
+      },
+      setValue: async (_index, value) => {
+        calls.push('set-value');
+        observedText = `Write your prompt to Claude ${value}`;
+      },
+      pressKey: async () => {
+        calls.push('press-key');
+      },
+    };
 
     const result = await submitMacCoworkPrompt(checkpoint.prompt, {
       appName: 'Claude',
       marker: checkpoint.marker,
       deadlineAt: Date.now() + 5_000,
+      runtime: { getApp: async () => app },
       dependencies: {
         ensureReady: async () => {
           calls.push('ready');
+          return { text: observedText, nodes: [] };
         },
         openFreshComposer: async () => {
           calls.push('open');
           return 'Write your prompt to Claude\nAutomatically approve';
         },
-        paste: async () => {
-          calls.push('paste');
+        setComposerValue: async (target, prompt) => {
+          calls.push('set-composer');
+          await target.setValue(1, prompt);
         },
-        readText: async () => {
-          calls.push('read');
-          return calls.filter((call) => call === 'read').length === 1
-            ? 'Write your prompt to Claude Reply with exactly: acknowledged.'
-            : '';
-        },
-        pressReturn: async () => {
-          calls.push('return');
-          throw new Error('osascript reported a transient failure');
+        submitDraft: async (target) => {
+          calls.push('submit');
+          await target.click(2);
         },
       },
     });
 
     expect(result.checkpoint.phase).toBe('submitted');
     expect(result.checkpoint.submissionConfidence).toBe('ambiguous');
-    expect(calls.filter((call) => call === 'return')).toHaveLength(1);
-  });
-
-  it('builds scripts that only use semantic focus and a single Return', () => {
-    expect(buildPasteIntoFocusedComposerScript('Claude')).toContain(
-      'keystroke "v" using command down'
-    );
-    expect(buildPressReturnScript('Claude')).toContain('key code 36');
-    expect(buildEnsureFrontmostScript('Claude')).toContain(
-      'whose frontmost is true'
-    );
+    expect(calls.filter((call) => call === 'submit')).toHaveLength(1);
+    expect(calls.filter((call) => call === 'click-send')).toHaveLength(1);
   });
 });

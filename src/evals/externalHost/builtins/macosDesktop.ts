@@ -432,7 +432,6 @@ async function submitPromptCapability({
         appName,
         marker: run.marker,
         openFreshComposer: true,
-        settleDelayMs: runNumberOption(config, binding, 'settleDelayMs'),
         deadlineAt: run.startedAtMs + run.timeoutMs,
       });
       state.data.macCoworkCheckpoint = submission.checkpoint;

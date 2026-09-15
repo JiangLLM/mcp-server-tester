@@ -20,12 +20,14 @@ import type {
 import type { UsageMetrics } from '../../../types/index.js';
 import { driverToSlug, hostTypeFromDriver } from '../driverIdentity.js';
 import {
+  getMacComputerUseRuntime,
+  waitForMacComputerUseText,
+} from './macComputerUse.js';
+import { ensureMacComputerUseApp } from './macCowork.js';
+import {
   classifyMacosDesktopFailure,
-  ensureMacosDesktopAppReady,
-  readMacosAccessibilityDescriptions,
   readMacosAccessibilityText,
   readMacosFrontWindowContents,
-  runAppleScript,
 } from './macosDesktop.js';
 
 const DEFAULT_APP_NAME = 'Claude';
@@ -153,30 +155,27 @@ async function activateCoworkSurfaceCapability({
 }: ExternalHostCapabilityContext): Promise<ExternalHostRunResult | void> {
   const appName =
     runStringOption(config, binding, 'appName') ?? DEFAULT_APP_NAME;
-  const settleDelayMs = 700;
   const appReadyTimeoutMs =
     runNumberOption(config, binding, 'appReadyTimeoutMs') ?? 60_000;
-  const script = buildActivateCoworkSurfaceScript(appName, settleDelayMs);
-  const deadlineAt = run.startedAtMs + run.timeoutMs;
-  const remainingTimeout = () =>
-    Math.max(1, Math.min(appReadyTimeoutMs, deadlineAt - Date.now()));
+  const deadlineAt = Math.min(
+    run.startedAtMs + run.timeoutMs,
+    Date.now() + appReadyTimeoutMs
+  );
   try {
-    await ensureMacosDesktopAppReady(appName, remainingTimeout());
-    await waitForClaudeAccessibilityText({
-      appName,
-      timeoutMs: remainingTimeout(),
-      predicate: isClaudeDesktopNavigationAccessibilityText,
-      expectation: 'Home and Code navigation',
-    });
-    await runAppleScript(script, {
-      timeoutMs: Math.max(1, Math.min(8_000, deadlineAt - Date.now())),
-    });
-    await waitForClaudeAccessibilityText({
-      appName,
-      timeoutMs: remainingTimeout(),
-      predicate: isClaudeCoworkAccessibilityText,
-      expectation: 'Cowork Home composer',
-    });
+    const app = await getMacComputerUseRuntime().getApp(appName);
+    await ensureMacComputerUseApp(app, deadlineAt);
+    await waitForMacComputerUseText(
+      app,
+      (observation) =>
+        isClaudeDesktopNavigationAccessibilityText(observation.text),
+      { deadlineAt }
+    );
+    await app.pressKey('CMD+1');
+    await waitForMacComputerUseText(
+      app,
+      (observation) => isClaudeCoworkAccessibilityText(observation.text),
+      { deadlineAt }
+    );
   } catch (err) {
     return failureResult({
       config,
@@ -188,26 +187,10 @@ async function activateCoworkSurfaceCapability({
       error: `Failed to activate the Cowork Home surface: ${formatError(err)}`,
       artifacts: [],
       limitations: [
-        'Cowork surface activation currently depends on Cmd+1 selecting Home and on the Home surface exposing Cowork accessibility labels.',
+        'Cowork surface activation requires an initialized Computer Use runtime exposing globalThis.cua.getApp("Claude").',
       ],
     });
   }
-}
-
-export function buildActivateCoworkSurfaceScript(
-  appName: string,
-  settleDelayMs: number
-): string {
-  return `
-tell application "System Events"
-  tell process ${JSON.stringify(appName)}
-    set frontmost to true
-    keystroke "1" using command down
-  end tell
-end tell
-delay ${settleDelayMs / 1000}
-return "ok"
-`;
 }
 
 export function isClaudeDesktopNavigationAccessibilityText(
@@ -220,40 +203,6 @@ export function isClaudeCoworkAccessibilityText(text: string): boolean {
   return (
     text.includes('Write your prompt to Claude') &&
     (text.includes('Learn more about Cowork') || text.includes('Cowork'))
-  );
-}
-
-async function waitForClaudeAccessibilityText(options: {
-  appName: string;
-  timeoutMs: number;
-  predicate(text: string): boolean;
-  expectation: string;
-}): Promise<string> {
-  const deadline = Date.now() + options.timeoutMs;
-  let lastError: unknown;
-  let lastText = '';
-
-  while (Date.now() < deadline) {
-    try {
-      const text = await readMacosAccessibilityDescriptions(options.appName);
-      lastText = text;
-      if (options.predicate(text)) {
-        return text;
-      }
-    } catch (err) {
-      lastError = err;
-    }
-    await delay(POLL_INTERVAL_MS);
-  }
-
-  const errorSuffix = lastError
-    ? ` Last accessibility error: ${formatError(lastError)}`
-    : '';
-  const observedSuffix = lastText
-    ? ` Last observed accessibility text: ${lastText.replaceAll(/\s+/g, ' ').slice(0, 500)}`
-    : '';
-  throw new Error(
-    `${options.appName} did not expose ${options.expectation} within ${options.timeoutMs}ms.${errorSuffix}${observedSuffix}`
   );
 }
 

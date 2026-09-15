@@ -44,11 +44,11 @@ The built-in Cowork driver requires:
 
 - macOS;
 - Claude Desktop installed and signed in;
-- Automation and Accessibility permission for the process running the tests;
+- a CUA-enabled host that initializes `globalThis.cua.getApp("Claude")`;
 - no running Claude process when a custom lifecycle capability requests a fresh environment;
 - serialized Cowork eval execution, with no manual Claude launch during a run.
 
-The driver launches Claude, waits for a real window and hydrated navigation, selects the current **Home** Cowork surface, opens a fresh Cowork composer through `claude://cowork/new`, and focuses and verifies the composer semantically. The Mac submission path uses UTF-8 clipboard paste, verifies the prompt through Accessibility before pressing Return, records an at-most-once submission checkpoint, restores the previous clipboard content, and never resubmits after an ambiguous Return. Claude's native local-agent session remains authoritative for the final response, tool calls, usage, cost, and trace telemetry.
+The driver launches Claude, acquires it through the host-provided Computer Use runtime (`globalThis.cua.getApp("Claude")`), observes the Accessibility tree and screenshot, selects the current **Home** Cowork surface, opens a fresh Cowork composer through `claude://cowork/new`, and verifies the composer semantically. The Mac submission path uses Computer Use `setValue` and a single semantic Send-node click, records an at-most-once submission checkpoint, retries stale UI nodes only before submission, and never resubmits after an ambiguous click. Claude's native local-agent session remains authoritative for the final response, tool calls, usage, cost, and trace telemetry.
 
 Cowork profile isolation is not available through the built-in driver. In the tested Claude Desktop build, redirecting `CLAUDE_CONFIG_DIR` made Cowork session creation/correlation unreliable. Full Electron profile isolation uses `CLAUDE_USER_DATA_DIR`, which packaged Claude accepts only with Anthropic's signed E2E authorization. Cowork also does not load arbitrary local MCP servers from `.claude.json`.
 
@@ -62,7 +62,7 @@ Cowork supports three MCP deployment paths:
 
 A plain Claude Desktop or Claude Code `mcpServers` entry is not available to Cowork. For a host-local E2E test, use an MCPB.
 
-This repository includes an opt-in, manually provisioned opaque-nonce fixture whose assertion cannot pass unless Cowork calls the MCP tool. Packaging and the eval command are automated; Claude's install confirmation, task permission selection, and extension removal are explicit prerequisites because the open-source core does not include a Computer Use backend.
+This repository includes an opt-in, manually provisioned opaque-nonce fixture whose assertion cannot pass unless Cowork calls the MCP tool. Packaging and the eval command are automated; Claude's install confirmation, task permission selection, and extension removal are explicit prerequisites. The driver also requires a CUA-enabled host that initializes `globalThis.cua.getApp("Claude")`; a normal Node/Vitest process without that runtime fails fast with a clear runtime-unavailable error.
 
 ```bash
 npx @anthropic-ai/mcpb pack \
