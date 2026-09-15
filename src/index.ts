@@ -329,6 +329,7 @@ export {
   createGlobalCuaComputerUseProvider,
   getMacComputerUseRuntime,
   listMacComputerUseProviders,
+  loadMacComputerUseProvider,
   registerExternalHostCapability,
   registerMacComputerUseProvider,
   runExternalHostScenario,

@@ -61,7 +61,15 @@ registerMacComputerUseProvider({
 });
 ```
 
-Select it in the Cowork binding with `computerUseProvider: "my-cua"`. The provider must return an app exposing `getAXStateAndScreenshot`, `click`, `setValue`, and `pressKey`; the Cowork state machine and evidence rules are provider-independent.
+Select it in the Cowork binding with `computerUseProvider: "my-cua"`. The provider must return an app exposing `getAXStateAndScreenshot`, `click`, `setValue`, and `pressKey`; the Cowork state machine and evidence rules are provider-independent. For the integration command, load an ESM plugin without changing MST:
+
+```bash
+MST_MAC_CUA_PLUGIN=/absolute/path/my-cua-plugin.mjs \
+MST_MAC_CUA_PROVIDER=my-cua \
+npm run test:external-host:cowork
+```
+
+The plugin may default-export the provider, export `provider`, or export `createProvider()`.
 
 Cowork profile isolation is not available through the built-in driver. In the tested Claude Desktop build, redirecting `CLAUDE_CONFIG_DIR` made Cowork session creation/correlation unreliable. Full Electron profile isolation uses `CLAUDE_USER_DATA_DIR`, which packaged Claude accepts only with Anthropic's signed E2E authorization. Cowork also does not load arbitrary local MCP servers from `.claude.json`.
 

@@ -48,6 +48,7 @@ export {
   createGlobalCuaComputerUseProvider,
   getMacComputerUseRuntime,
   listMacComputerUseProviders,
+  loadMacComputerUseProvider,
   registerMacComputerUseProvider,
 } from './builtins/macComputerUse.js';
 export type {

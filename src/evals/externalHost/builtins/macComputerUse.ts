@@ -80,6 +80,27 @@ export function listMacComputerUseProviders(): MacComputerUseProvider[] {
   return Array.from(computerUseProviders.values());
 }
 
+export async function loadMacComputerUseProvider(
+  moduleSpecifier: string
+): Promise<MacComputerUseProvider> {
+  const module = (await import(moduleSpecifier)) as {
+    default?: MacComputerUseProvider;
+    provider?: MacComputerUseProvider;
+    createProvider?: () =>
+      | MacComputerUseProvider
+      | Promise<MacComputerUseProvider>;
+  };
+  const provider =
+    module.default ?? module.provider ?? (await module.createProvider?.());
+  if (!provider) {
+    throw new Error(
+      `Computer Use plugin ${moduleSpecifier} must default-export a provider, export provider, or export createProvider.`
+    );
+  }
+  registerMacComputerUseProvider(provider);
+  return provider;
+}
+
 export function getMacComputerUseRuntime(
   providerId = 'global-cua'
 ): MacComputerUseRuntime {

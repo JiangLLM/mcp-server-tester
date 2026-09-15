@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { runExternalHostScenario } from '../runtime.js';
+import { loadMacComputerUseProvider } from './macComputerUse.js';
+
+if (process.env.MST_MAC_CUA_PLUGIN) {
+  await loadMacComputerUseProvider(process.env.MST_MAC_CUA_PLUGIN);
+}
+
+const computerUseProvider = process.env.MST_MAC_CUA_PROVIDER ?? 'global-cua';
 
 describe('Claude external host integrations', () => {
   it('drives Claude Chat Desktop and captures low-confidence visible response evidence', async () => {
@@ -42,6 +49,7 @@ describe('Claude external host integrations', () => {
         timeoutMs: 60_000,
         options: {
           newConversationShortcut: 'none',
+          computerUseProvider,
         },
       },
       { caseId: 'claude-cowork-desktop-integration' }
@@ -79,6 +87,7 @@ describe('Claude external host integrations', () => {
           timeoutMs: 120_000,
           options: {
             newConversationShortcut: 'none',
+            computerUseProvider,
           },
         },
         { caseId: 'claude-cowork-isolated-mcp-integration' }
