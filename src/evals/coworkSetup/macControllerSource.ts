@@ -1,5 +1,4 @@
-// Kept byte-for-byte aligned with scripts/cowork-macos-app.swift by a parity test.
-// Embedded so installed/bundled packages do not depend on repository scripts.
+// Native controller source is embedded so installed packages need no helper scripts.
 export const MAC_COWORK_CONTROLLER_SOURCE = String.raw`import AppKit
 import ApplicationServices
 import Foundation

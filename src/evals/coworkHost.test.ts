@@ -246,17 +246,6 @@ describe('automatic Cowork host lifecycle', () => {
     expect(trace.events).toEqual([]);
     await session.dispose();
   });
-  it('requires a supplied secrets file to be private and consistent with runtime values', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'cowork-host-secret-test-'));
-    dirs.push(dir);
-    const file = join(dir, 'runtime.json');
-    context.secretsFile = file;
-    await writeFile(file, JSON.stringify(env), { mode: 0o644 });
-    await expect(prepare()).rejects.toThrow(
-      'Unable to load Cowork runtime credentials.'
-    );
-    expect(prepareMacCoworkSession).not.toHaveBeenCalled();
-  });
   it('integrates automatic setup, two cases, and disposal through the real suite runner', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'cowork-host-suite-'));
     dirs.push(dir);

@@ -16,7 +16,6 @@ import type { EvalManifest } from '../evalManifest.js';
 import { prepareCoworkMcpBundle } from './bundle.js';
 import { createCoworkMcpPlan, resolveCoworkMcpHeaders } from './config.js';
 import { resolveCoworkSetupConfig } from './options.js';
-import { loadCoworkSecretsFile } from './secrets.js';
 
 const ERROR = 'Unable to change Cowork configuration safely.';
 const LOCK = '.mst-setup-lock';
@@ -526,8 +525,6 @@ type InstallOptions = {
   stagingDirectory: string;
   manifest: EvalManifest;
   arm?: string;
-  /** When supplied, the file remains the exclusive inference-key source. */
-  secretsFile?: string;
   managedPreferencePaths: string[];
   /** Explicit runtime credentials only; never falls back to process.env. */
   env?: Record<string, string | undefined>;
@@ -542,17 +539,13 @@ async function validateInstall(options: InstallOptions) {
   await checkManaged(options.managedPreferencePaths);
   if (await exists(join(profileDirectory, LOCK))) fail();
   if (await exists(directory)) fail();
-  const secrets =
-    options.secretsFile === undefined
-      ? { ...options.env }
-      : await loadCoworkSecretsFile(options.secretsFile);
-  const key = Object.hasOwn(secrets, 'ANTHROPIC_API_KEY')
-    ? secrets.ANTHROPIC_API_KEY
+  const env = { ...options.env };
+  const key = Object.hasOwn(env, 'ANTHROPIC_API_KEY')
+    ? env.ANTHROPIC_API_KEY
     : undefined;
   if (typeof key !== 'string' || !/^[A-Za-z0-9._~+/-]+=*$/.test(key)) fail();
   const inference = jsonBytes({ ANTHROPIC_API_KEY: key });
   if (inference.length > 64 * 1024) fail();
-  const env = { ...options.env, ...secrets };
   const arms = options.manifest.arms ?? [];
   const arm = arms.find((candidate) => candidate.name === options.arm);
   if (

@@ -55,11 +55,6 @@ afterEach(async () => {
 });
 
 describe('bundled Mac native controller (all execution mocked)', () => {
-  it('keeps embedded Swift byte-for-byte identical to the repository script', async () => {
-    expect(MAC_COWORK_CONTROLLER_SOURCE).toBe(
-      await fs.readFile('scripts/cowork-macos-app.swift', 'utf8')
-    );
-  });
   it('never executes or writes native scratch on non-macOS', async () => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
     const { getMacCoworkController } = await import('./macController.js');

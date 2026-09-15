@@ -23,7 +23,6 @@ import {
 } from './coworkSetup/config.js';
 import { resolveCoworkSetupConfig } from './coworkSetup/options.js';
 import { prepareMacCoworkSession } from './coworkSetup/macSession.js';
-import { loadCoworkSecretsFile } from './coworkSetup/secrets.js';
 
 const CoworkHostSchema = ExternalHostConfigSchema.extend({
   type: z.literal('cowork'),
@@ -74,16 +73,6 @@ async function prepareCoworkHost(
   );
   createCoworkMcpPlan(servers, '/run/mst-cowork-validation', setup);
   const env = { ...context.env, ...input.env };
-  if (context.secretsFile) {
-    const fileSecrets = await loadCoworkSecretsFile(context.secretsFile);
-    if (
-      Object.entries(fileSecrets).some(([name, value]) => env[name] !== value)
-    ) {
-      throw new Error(
-        'Cowork runtime credentials do not match the supplied private secrets file.'
-      );
-    }
-  }
   resolveCoworkMcpHeaders(servers, env);
   const key = env.ANTHROPIC_API_KEY;
   if (typeof key !== 'string' || !/^[A-Za-z0-9._~+/-]+=*$/.test(key)) {

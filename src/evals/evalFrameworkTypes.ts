@@ -55,8 +55,6 @@ export interface HostRunContext {
   manifest: EvalManifest;
   /** Validated suite defaults before arm overlay, for nested-option inheritance. */
   baseManifest?: EvalManifest;
-  /** Explicit caller-provided file, if any; never inferred from the filesystem. */
-  secretsFile?: string;
   arm?: EvalArm;
   /** Runtime-only environment isolated per suite. */
   env?: Record<string, string | undefined>;
@@ -111,8 +109,8 @@ export interface HostDefinition {
   /**
    * Automatically preferred over run when present; run is not required.
    * Prepared lazily before the first host case (never for direct/dry runs).
-   * Must self-clean partial resources on rejection. Configuration switches
-   * dispose the previous session first and require serial case execution.
+   * Must self-clean partial resources on rejection. Prepared arms are serial
+   * and use one effective configuration; switches require separate arms.
    */
   prepareSession?(
     input: Omit<HostRunInput, 'scenario'>,

@@ -21,115 +21,8 @@ function expectInvalid(servers: MCPConfig[]): void {
 }
 
 describe('createCoworkMcpPlan', () => {
-  it('adds a wildcard allow policy only on the selected servers after explicit opt-in', () => {
-    const servers = [
-      http(),
-      http({ label: 'other', serverUrl: 'https://other.example.test/mcp' }),
-    ];
-    const baseline = createCoworkMcpPlan(servers, DIRECTORY);
-    expect(
-      createCoworkMcpPlan(servers, DIRECTORY, { approveWriteTools: false })
-    ).toEqual(baseline);
-    const optedIn = createCoworkMcpPlan(servers, DIRECTORY, {
-      approveWriteTools: true,
-    });
-    expect(optedIn.settings).toEqual({
-      ...baseline.settings,
-      managedMcpServers: baseline.settings.managedMcpServers.map((server) => ({
-        ...server,
-        toolPolicy: { '*': 'allow' },
-      })),
-    });
-    expect(optedIn.servers).toEqual(baseline.servers);
-    expect(
-      createCoworkMcpPlan([], DIRECTORY, { approveWriteTools: true })
-    ).toEqual(createCoworkMcpPlan([], DIRECTORY));
-  });
-  it('projects canonical servers into restricted managed settings without secrets', () => {
-    const servers = [
-      http({ headers: { 'X-Api-Key': 'synthetic-header-secret' } }),
-      http({
-        label: 'Bearer_2',
-        serverUrl: 'https://second.example.test/custom-path',
-        auth: { accessToken: 'synthetic-token-secret' },
-      }),
-      http({
-        label: 'env',
-        serverUrl: 'https://third.example.test/',
-        auth: { accessTokenEnv: 'SYNTHETIC_TOKEN_ENV' },
-      }),
-      http({
-        label: 'public',
-        serverUrl: 'https://public.example.test/mcp',
-        headers: {},
-        auth: {},
-      }),
-    ];
-    const plan = createCoworkMcpPlan(servers, DIRECTORY);
-    expect(plan).toEqual({
-      settings: {
-        managedMcpServers: [
-          {
-            name: 'search',
-            transport: 'http',
-            url: servers[0]?.serverUrl,
-            headersHelper: `${DIRECTORY}/mcp-search-headers.sh`,
-          },
-          {
-            name: 'Bearer_2',
-            transport: 'http',
-            url: servers[1]?.serverUrl,
-            headersHelper: `${DIRECTORY}/mcp-Bearer_2-headers.sh`,
-          },
-          {
-            name: 'env',
-            transport: 'http',
-            url: servers[2]?.serverUrl,
-            headersHelper: `${DIRECTORY}/mcp-env-headers.sh`,
-          },
-          {
-            name: 'public',
-            transport: 'http',
-            url: servers[3]?.serverUrl,
-          },
-        ],
-        allowedMcpServers: [
-          { serverName: 'search' },
-          { serverName: 'Bearer_2' },
-          { serverName: 'env' },
-          { serverName: 'public' },
-        ],
-        allowManagedMcpServersOnly: true,
-      },
-      servers: [
-        {
-          label: 'search',
-          url: servers[0]?.serverUrl,
-          helperName: 'mcp-search-headers.sh',
-        },
-        {
-          label: 'Bearer_2',
-          url: servers[1]?.serverUrl,
-          helperName: 'mcp-Bearer_2-headers.sh',
-        },
-        {
-          label: 'env',
-          url: servers[2]?.serverUrl,
-          helperName: 'mcp-env-headers.sh',
-        },
-        { label: 'public', url: servers[3]?.serverUrl },
-      ],
-    });
-    for (const secret of [
-      'synthetic-header-secret',
-      'synthetic-token-secret',
-      'SYNTHETIC_TOKEN_ENV',
-      'X-Api-Key',
-    ]) {
-      expect(JSON.stringify(plan)).not.toContain(secret);
-    }
-  });
-
+  // Bundle/transaction tests assert exact managed settings, server sets and
+  // approval policies. Keep this suite focused on canonical validation.
   it('never reads header values, tokens, or environment references while planning', () => {
     const readSecret = vi.fn((): never => {
       throw new Error('synthetic-secret-was-read');
@@ -142,31 +35,17 @@ describe('createCoworkMcpPlan', () => {
     for (const key of ['accessToken', 'accessTokenEnv']) {
       const auth = {};
       Object.defineProperty(auth, key, { enumerable: true, get: readSecret });
-      expect(createCoworkMcpPlan([http({ headers, auth })], DIRECTORY)).toEqual(
-        createCoworkMcpPlan(
-          [
-            http({
-              headers: { 'X-Secret': 'different' },
-              auth: { accessToken: 'x' },
-            }),
-          ],
-          DIRECTORY
-        )
-      );
+      expect(
+        createCoworkMcpPlan([http({ headers, auth })], DIRECTORY).servers
+      ).toEqual([
+        {
+          label: 'search',
+          url: http().serverUrl,
+          helperName: 'mcp-search-headers.sh',
+        },
+      ]);
     }
     expect(readSecret).not.toHaveBeenCalled();
-  });
-
-  it('allows an explicit empty list', () => {
-    expect(createCoworkMcpPlan([], DIRECTORY)).toEqual({
-      settings: {
-        managedMcpServers: [],
-        allowedMcpServers: [],
-        allowManagedMcpServersOnly: true,
-      },
-      servers: [],
-    });
-    expect(resolveCoworkMcpHeaders([], {})).toEqual({});
   });
 
   it('preserves meaningful paths, escapes and trailing slashes without requiring /eval', () => {
@@ -405,31 +284,19 @@ describe('resolveCoworkMcpHeaders', () => {
     });
     expect(JSON.stringify(servers)).toBe(before);
     expect(env).toEqual({ TEST_TOKEN: 'synthetic-env-token' });
-    expect(
-      JSON.stringify(createCoworkMcpPlan(servers, DIRECTORY))
-    ).not.toContain('synthetic');
+    expect(JSON.stringify(createCoworkMcpPlan(servers, DIRECTORY))).not.toMatch(
+      /synthetic|TEST_TOKEN|X-Key/
+    );
   });
 
   it('supports raw Authorization headers without bearer auth and empty field values', () => {
-    expect(
-      resolveCoworkMcpHeaders(
-        [
-          http({
-            headers: {
-              authorization: 'Basic synthetic',
-              'X-Empty': '',
-              'X-Text': 'café',
-            },
-          }),
-        ],
-        {}
-      )
-    ).toEqual({
-      search: {
-        authorization: 'Basic synthetic',
-        'X-Empty': '',
-        'X-Text': 'café',
-      },
+    const headers = {
+      authorization: 'Basic synthetic',
+      'X-Empty': '',
+      'X-Text': 'café',
+    };
+    expect(resolveCoworkMcpHeaders([http({ headers })], {})).toEqual({
+      search: headers,
     });
   });
 

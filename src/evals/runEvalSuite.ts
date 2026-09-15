@@ -184,91 +184,21 @@ function resolveHost(
   return { definition, declaration, config };
 }
 
-interface HostSessionConfig {
-  declaration: HostConfig;
-  mcpHostConfig: HostRunContext['mcpHostConfig'];
-}
-
-function usesSuiteHost(evalCase: EvalCase): boolean {
-  return evalCase.mode === 'host' || evalCase.mode === 'mcp_host';
-}
-
-/** One resource owner per arm, including a single-flight preparation promise. */
-function createArmHostSession() {
-  let active:
-    | { config: HostSessionConfig; session: Promise<PreparedHostSession> }
-    | undefined;
-  let cleanupFailure: unknown;
-  let cleanupFailed = false;
-
-  async function dispose(): Promise<void> {
-    if (cleanupFailed) throw cleanupFailure;
-    const previous = active;
-    active = undefined;
-    if (!previous) return;
-    // A rejected preparation owns its partial cleanup by contract.
-    const session = await previous.session.catch(() => undefined);
-    if (!session) return;
-    try {
-      await session.dispose();
-    } catch (error) {
-      cleanupFailed = true;
-      cleanupFailure = error;
-      throw error;
-    }
-  }
-
-  async function run(
-    definition: HostDefinition,
-    input: HostRunInput,
-    declaration: HostConfig,
-    context: HostRunContext
-  ) {
-    if (cleanupFailed) throw cleanupFailure;
-    const config = { declaration, mcpHostConfig: context.mcpHostConfig };
-    if (active && !isDeepStrictEqual(active.config, config)) {
-      // Preflight rejects concurrent switches; serial switches must release
-      // the previous host before the replacement can acquire resources.
-      await dispose();
-    }
-    if (definition.prepareSession) {
-      if (!active) {
-        active = {
-          config,
-          session: Promise.resolve().then(() =>
-            definition.prepareSession!(
-              { servers: input.servers, env: input.env },
-              declaration,
-              context
-            )
-          ),
-        };
-      }
-      const session = await active.session;
-      return session.run(input, declaration, context);
-    }
-    if (!definition.run) {
-      throw new Error(
-        `Host ${declaration.type} must expose run() or prepareSession() for per-case dispatch.`
-      );
-    }
-    return definition.run(input, declaration, context);
-  }
-
-  return { run, dispose };
-}
-
 /** Validate every selected arm before any execution or session preparation. */
-function validateHostConcurrency(
+function validateHostLifecycle(
   datasets: EvalDataset[],
   declaration: HostConfig,
   concurrency: number
 ): void {
   const cases = datasets.flatMap((dataset) => dataset.cases);
-  const configs = cases.filter(usesSuiteHost).map((evalCase) => ({
-    declaration: evalCase.host ?? declaration,
-    mcpHostConfig: evalCase.mcpHostConfig,
-  }));
+  const configs = cases
+    .filter(
+      (evalCase) => evalCase.mode === 'host' || evalCase.mode === 'mcp_host'
+    )
+    .map((evalCase) => ({
+      declaration: evalCase.host ?? declaration,
+      mcpHostConfig: evalCase.mcpHostConfig,
+    }));
   const hasPreparedHost = configs.some(
     (config) =>
       typeof getHost(config.declaration.type).prepareSession === 'function'
@@ -299,14 +229,15 @@ function validateHostConcurrency(
       );
     }
   }
-  if (
-    concurrency > 1 &&
-    hasPreparedHost &&
-    configs.some((config) => !isDeepStrictEqual(config, configs[0]))
-  ) {
-    throw new Error(
-      'Concurrent host/config switching with prepared sessions is unsupported; use concurrency: 1 or separate arms.'
-    );
+  if (hasPreparedHost) {
+    if (concurrency !== 1) {
+      throw new Error('Prepared hosts require concurrency: 1.');
+    }
+    if (configs.some((config) => !isDeepStrictEqual(config, configs[0]))) {
+      throw new Error(
+        'Prepared hosts require identical effective host configuration (including mcpHostConfig) across all host cases in an arm; use separate arms.'
+      );
+    }
   }
 }
 
@@ -598,7 +529,7 @@ export async function runEvalSuite(
       };
       return { source, executionDataset, effectiveDataset };
     });
-    validateHostConcurrency(
+    validateHostLifecycle(
       plannedDatasets.map(({ effectiveDataset }) => effectiveDataset),
       host.declaration,
       manifest.concurrency ?? 1
@@ -622,7 +553,9 @@ export async function runEvalSuite(
     plannedDatasets,
   } of plans) {
     const sourceResults: Array<{ name: string; result: EvalRunnerResult }> = [];
-    const sessions = createArmHostSession();
+    let session: PreparedHostSession | undefined;
+    let preparationFailed = false;
+    let preparationError: unknown;
     const client =
       host.definition.run || host.definition.prepareSession
         ? undefined
@@ -678,28 +611,44 @@ export async function runEvalSuite(
               }
               const definition = getHost(declaration.type);
               if (!definition.run && !definition.prepareSession && mcp) {
-                await sessions.dispose();
                 return executeToolCall(evalCase, mcp);
               }
-              const trace = await sessions.run(
-                definition,
-                {
-                  scenario: evalCase.scenario ?? '',
-                  servers: resolvedServers,
-                  env,
-                },
-                declaration,
-                {
-                  manifest: effectiveManifest,
-                  baseManifest: manifest,
-                  secretsFile: options.secretsFile
-                    ? path.resolve(rootDir, options.secretsFile)
-                    : undefined,
-                  arm,
-                  env,
-                  mcpHostConfig: evalCase.mcpHostConfig,
+              const input: HostRunInput = {
+                scenario: evalCase.scenario ?? '',
+                servers: resolvedServers,
+                env,
+              };
+              const context: HostRunContext = {
+                manifest: effectiveManifest,
+                baseManifest: manifest,
+                arm,
+                env,
+                mcpHostConfig: evalCase.mcpHostConfig,
+              };
+              if (definition.prepareSession) {
+                // Preflight guarantees serial execution with one config per arm.
+                if (preparationFailed) throw preparationError;
+                if (!session) {
+                  try {
+                    session = await definition.prepareSession(
+                      { servers: resolvedServers, env },
+                      declaration,
+                      context
+                    );
+                  } catch (error) {
+                    // Rejected preparation self-cleans; do not retry later cases.
+                    preparationFailed = true;
+                    preparationError = error;
+                    throw error;
+                  }
                 }
-              );
+              }
+              const runner = session ?? definition;
+              if (!runner.run)
+                throw new Error(
+                  `Host ${declaration.type} must expose run() or prepareSession() for per-case dispatch.`
+                );
+              const trace = await runner.run(input, declaration, context);
               return hostTraceToExecution(
                 trace,
                 definition.evidence ?? 'none',
@@ -719,7 +668,7 @@ export async function runEvalSuite(
       }
     } finally {
       try {
-        await sessions.dispose();
+        await session?.dispose();
       } finally {
         if (client) await closeMCPClient(client);
       }

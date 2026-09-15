@@ -3,7 +3,6 @@ import { join, posix, resolve } from 'node:path';
 import type { MCPConfig } from '../../config/mcpConfig.js';
 import type { EvalManifest } from '../evalManifest.js';
 import { createCoworkMcpPlan, resolveCoworkMcpHeaders } from './config.js';
-import { loadCoworkSecretsFile } from './secrets.js';
 import { resolveCoworkSetupConfig, type CoworkSetupConfig } from './options.js';
 
 const ERROR_MESSAGE = 'Unable to prepare Cowork MCP bundle.';
@@ -115,8 +114,8 @@ COWORK_HEADERS_PY
 /**
  * Prepare private, ephemeral staging input, NOT a shareable report. Copying or
  * applying it to runtimeDirectory is caller-owned; this does not verify Desktop.
- * Explicit secrets-file entries override the supplied environment; no ambient
- * environment is read. Runtime and staging use the same relative file layout.
+ * Only the supplied runtime environment is read, never ambient process.env.
+ * Runtime and staging use the same relative file layout.
  * Parent directories must be trusted; helpers use O_NOFOLLOW on the final file.
  */
 export async function prepareCoworkMcpBundle(options: {
@@ -125,19 +124,12 @@ export async function prepareCoworkMcpBundle(options: {
   directory: string;
   runtimeDirectory: string;
   env?: Record<string, string | undefined>;
-  secretsFile?: string;
 }): Promise<{ directory: string; settingsPath: string; serverCount: number }> {
   let createdDirectory: string | undefined;
   try {
     const { servers, setup } = selectSetup(options.manifest, options.arm);
     const plan = createCoworkMcpPlan(servers, options.runtimeDirectory, setup);
-    const env = options.env ?? {};
-    const headers = resolveCoworkMcpHeaders(
-      servers,
-      options.secretsFile === undefined
-        ? env
-        : { ...env, ...(await loadCoworkSecretsFile(options.secretsFile)) }
-    );
+    const headers = resolveCoworkMcpHeaders(servers, options.env ?? {});
     const credentials = plan.servers.flatMap((server, index) => {
       if (!server.helperName) return [];
       const values = headers[server.label]!;

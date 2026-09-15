@@ -1,7 +1,10 @@
 {
-  "name": "cowork-multi-server-manual",
-  "datasets": [{ "type": "file", "path": "./manual-query.json" }],
-  "host": { "type": "cowork" },
+  "name": "cowork-example",
+  "datasets": [{ "type": "file", "path": "./queries.json" }],
+  "host": {
+    "type": "cowork",
+    "driver": "anthropic.claude.cowork.desktop-app.macos"
+  },
   "servers": [
     {
       "transport": "http",
