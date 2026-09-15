@@ -12,6 +12,11 @@ export interface MacComputerUseRuntime {
   getApp(appName: string): Promise<MacComputerUseApp>;
 }
 
+export interface MacComputerUseProvider extends MacComputerUseRuntime {
+  id: string;
+  displayName?: string;
+}
+
 interface GlobalComputerUseHost {
   cua?: {
     getApp?: (appName: string) => Promise<unknown>;
@@ -32,6 +37,8 @@ export interface MacComputerUseObservation {
   screenshot?: unknown;
 }
 
+const computerUseProviders = new Map<string, MacComputerUseProvider>();
+
 const staleMarkers = [
   '-10005',
   'nowindowsavailable',
@@ -45,19 +52,63 @@ const staleMarkers = [
   'axerror.invaliduielement',
 ];
 
-export function getMacComputerUseRuntime(): MacComputerUseRuntime {
-  const host = globalThis as typeof globalThis & GlobalComputerUseHost;
-  if (typeof host.cua?.getApp !== 'function') {
+export function registerMacComputerUseProvider(
+  provider: MacComputerUseProvider
+): () => void {
+  if (!provider.id.trim()) {
+    throw new Error('Computer Use provider id must be non-empty.');
+  }
+  if (typeof provider.getApp !== 'function') {
     throw new Error(
-      'Computer Use runtime unavailable: globalThis.cua.getApp is not initialized. Run MST inside a CUA-enabled host or inject a MacComputerUseRuntime.'
+      `Computer Use provider ${provider.id} must implement getApp.`
     );
   }
+  if (computerUseProviders.has(provider.id)) {
+    throw new Error(
+      `Computer Use provider is already registered: ${provider.id}`
+    );
+  }
+  computerUseProviders.set(provider.id, provider);
+  return () => {
+    if (computerUseProviders.get(provider.id) === provider) {
+      computerUseProviders.delete(provider.id);
+    }
+  };
+}
 
+export function listMacComputerUseProviders(): MacComputerUseProvider[] {
+  return Array.from(computerUseProviders.values());
+}
+
+export function getMacComputerUseRuntime(
+  providerId = 'global-cua'
+): MacComputerUseRuntime {
+  const provider = computerUseProviders.get(providerId);
+  if (!provider) {
+    const available =
+      Array.from(computerUseProviders.keys()).join(', ') || 'none';
+    throw new Error(
+      `Computer Use provider not registered: ${providerId}. Available providers: ${available}`
+    );
+  }
+  return provider;
+}
+
+export function createGlobalCuaComputerUseProvider(): MacComputerUseProvider {
   return {
+    id: 'global-cua',
+    displayName: 'Host-provided globalThis.cua',
     async getApp(appName) {
+      const host = globalThis as typeof globalThis & GlobalComputerUseHost;
+      if (typeof host.cua?.getApp !== 'function') {
+        throw new Error(
+          'Computer Use runtime unavailable: globalThis.cua.getApp is not initialized. Register a CUA provider or run MST inside a CUA-enabled host.'
+        );
+      }
+
       let rawApp: unknown;
       try {
-        rawApp = await host.cua!.getApp!(appName);
+        rawApp = await host.cua.getApp(appName);
       } catch (error) {
         throw new Error(
           `Computer Use could not acquire native app ${appName}: ${formatError(error)}`
@@ -67,6 +118,8 @@ export function getMacComputerUseRuntime(): MacComputerUseRuntime {
     },
   };
 }
+
+registerMacComputerUseProvider(createGlobalCuaComputerUseProvider());
 
 export function validateMacComputerUseApp(
   appName: string,

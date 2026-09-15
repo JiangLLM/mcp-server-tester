@@ -44,11 +44,24 @@ The built-in Cowork driver requires:
 
 - macOS;
 - Claude Desktop installed and signed in;
-- a CUA-enabled host that initializes `globalThis.cua.getApp("Claude")`;
+- a registered MST Computer Use provider; the built-in `global-cua` provider requires a host that initializes `globalThis.cua.getApp("Claude")`;
 - no running Claude process when a custom lifecycle capability requests a fresh environment;
 - serialized Cowork eval execution, with no manual Claude launch during a run.
 
-The driver launches Claude, acquires it through the host-provided Computer Use runtime (`globalThis.cua.getApp("Claude")`), observes the Accessibility tree and screenshot, selects the current **Home** Cowork surface, opens a fresh Cowork composer through `claude://cowork/new`, and verifies the composer semantically. The Mac submission path uses Computer Use `setValue` and a single semantic Send-node click, records an at-most-once submission checkpoint, retries stale UI nodes only before submission, and never resubmits after an ambiguous click. Claude's native local-agent session remains authoritative for the final response, tool calls, usage, cost, and trace telemetry.
+The driver launches Claude, resolves a registered MST Computer Use provider, observes the Accessibility tree and screenshot, selects the current **Home** Cowork surface, opens a fresh Cowork composer through `claude://cowork/new`, and verifies the composer semantically. The Mac submission path uses Computer Use `setValue` and a single semantic Send-node click, records an at-most-once submission checkpoint, retries stale UI nodes only before submission, and never resubmits after an ambiguous click. Claude's native local-agent session remains authoritative for the final response, tool calls, usage, cost, and trace telemetry.
+
+MST ships a `global-cua` provider that adapts a host-initialized `globalThis.cua.getApp("Claude")`. Other CUA implementations can register the same provider contract:
+
+```ts
+import { registerMacComputerUseProvider } from '@gleanwork/mcp-server-tester';
+
+registerMacComputerUseProvider({
+  id: 'my-cua',
+  getApp: async (appName) => myCua.getApp(appName),
+});
+```
+
+Select it in the Cowork binding with `computerUseProvider: "my-cua"`. The provider must return an app exposing `getAXStateAndScreenshot`, `click`, `setValue`, and `pressKey`; the Cowork state machine and evidence rules are provider-independent.
 
 Cowork profile isolation is not available through the built-in driver. In the tested Claude Desktop build, redirecting `CLAUDE_CONFIG_DIR` made Cowork session creation/correlation unreliable. Full Electron profile isolation uses `CLAUDE_USER_DATA_DIR`, which packaged Claude accepts only with Anthropic's signed E2E authorization. Cowork also does not load arbitrary local MCP servers from `.claude.json`.
 

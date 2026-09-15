@@ -162,7 +162,10 @@ async function activateCoworkSurfaceCapability({
     Date.now() + appReadyTimeoutMs
   );
   try {
-    const app = await getMacComputerUseRuntime().getApp(appName);
+    const computerUseProvider =
+      runStringOption(config, binding, 'computerUseProvider') ?? 'global-cua';
+    const app =
+      await getMacComputerUseRuntime(computerUseProvider).getApp(appName);
     await ensureMacComputerUseApp(app, deadlineAt);
     await waitForMacComputerUseText(
       app,

@@ -44,6 +44,19 @@ export {
   listExternalHostDriverReferences,
 } from './schema.js';
 export type { ExternalHostDriverReference } from './schema.js';
+export {
+  createGlobalCuaComputerUseProvider,
+  getMacComputerUseRuntime,
+  listMacComputerUseProviders,
+  registerMacComputerUseProvider,
+} from './builtins/macComputerUse.js';
+export type {
+  MacComputerUseApp,
+  MacComputerUseObservation,
+  MacComputerUseNode,
+  MacComputerUseProvider,
+  MacComputerUseRuntime,
+} from './builtins/macComputerUse.js';
 export type {
   EvidenceSource,
   ExternalHostCapabilityBinding,

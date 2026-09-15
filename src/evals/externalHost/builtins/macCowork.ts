@@ -45,6 +45,7 @@ export interface MacCoworkSubmissionOptions {
   openFreshComposer?: boolean;
   freshComposerTimeoutMs?: number;
   deadlineAt?: number;
+  computerUseProvider?: string;
   runtime?: MacComputerUseRuntime;
   openUrl?: (url: string) => Promise<void>;
   dependencies?: Partial<MacCoworkDependencies>;
@@ -76,7 +77,8 @@ export async function submitMacCoworkPrompt(
     marker: options.marker,
   };
   const deadlineAt = options.deadlineAt ?? Date.now() + 120_000;
-  const runtime = options.runtime ?? getMacComputerUseRuntime();
+  const runtime =
+    options.runtime ?? getMacComputerUseRuntime(options.computerUseProvider);
   const dependencies = options.dependencies ?? {};
   const ensureReady = dependencies.ensureReady ?? ensureMacComputerUseApp;
   const openFreshComposer =

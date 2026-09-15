@@ -432,6 +432,9 @@ async function submitPromptCapability({
         appName,
         marker: run.marker,
         openFreshComposer: true,
+        computerUseProvider:
+          runStringOption(config, binding, 'computerUseProvider') ??
+          'global-cua',
         deadlineAt: run.startedAtMs + run.timeoutMs,
       });
       state.data.macCoworkCheckpoint = submission.checkpoint;

@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   actOnMacComputerUseNode,
   getMacComputerUseRuntime,
+  listMacComputerUseProviders,
   parseMacComputerUseNodes,
+  registerMacComputerUseProvider,
   validateMacComputerUseApp,
 } from './macComputerUse.js';
 import type { MacComputerUseApp } from './macComputerUse.js';
@@ -61,12 +63,33 @@ describe('Mac Computer Use runtime', () => {
     expect(observations).toBe(2);
   });
 
-  it('fails clearly when the host has not initialized Computer Use', () => {
+  it('registers and resolves arbitrary CUA providers as MST plugins', async () => {
+    const provider = {
+      id: 'test-provider',
+      getApp: async () => ({
+        getAXStateAndScreenshot: async () => ({ state: '' }),
+        click: async () => undefined,
+        setValue: async () => undefined,
+        pressKey: async () => undefined,
+      }),
+    };
+    const unregister = registerMacComputerUseProvider(provider);
+    try {
+      expect(listMacComputerUseProviders().map(({ id }) => id)).toContain(
+        'test-provider'
+      );
+      expect(getMacComputerUseRuntime('test-provider')).toBe(provider);
+    } finally {
+      unregister();
+    }
+  });
+
+  it('fails clearly when the global CUA plugin has not been initialized', async () => {
     const host = globalThis as typeof globalThis & { cua?: unknown };
     const previous = host.cua;
     delete host.cua;
     try {
-      expect(() => getMacComputerUseRuntime()).toThrow(
+      await expect(getMacComputerUseRuntime().getApp('Claude')).rejects.toThrow(
         'globalThis.cua.getApp is not initialized'
       );
     } finally {

@@ -311,6 +311,11 @@ export type {
   HostDriverConfig,
   HostDriverId,
   HostRunContext,
+  MacComputerUseApp,
+  MacComputerUseNode,
+  MacComputerUseObservation,
+  MacComputerUseProvider,
+  MacComputerUseRuntime,
   ObservationConfidence,
   TraceSource,
 } from './evals/externalHost/index.js';
@@ -321,7 +326,11 @@ export {
   getExternalHostConfigJsonSchema,
   getExternalHostReference,
   listExternalHostDriverReferences,
+  createGlobalCuaComputerUseProvider,
+  getMacComputerUseRuntime,
+  listMacComputerUseProviders,
   registerExternalHostCapability,
+  registerMacComputerUseProvider,
   runExternalHostScenario,
 } from './evals/externalHost/index.js';
 
