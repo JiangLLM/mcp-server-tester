@@ -240,6 +240,57 @@ describe('validatePattern', () => {
     });
   });
 
+  describe('stateful RegExp patterns', () => {
+    it.each(['g', 'y', 'gi', 'yi'])(
+      'should give consistent results when a /hello/%s pattern is reused',
+      (flags) => {
+        const pattern = new RegExp('hello', flags);
+
+        expect(validatePattern('hello', pattern).pass).toBe(true);
+        expect(validatePattern('hello', pattern).pass).toBe(true);
+        expect(pattern.lastIndex).toBe(0);
+      }
+    );
+
+    it.each(['g', 'y'])(
+      'should ignore and preserve an existing lastIndex for /hello/%s',
+      (flags) => {
+        const pattern = new RegExp('hello', flags);
+        pattern.lastIndex = 1;
+
+        expect(validatePattern('hello', pattern).pass).toBe(true);
+        expect(pattern.lastIndex).toBe(1);
+        expect(validatePattern('goodbye', pattern).pass).toBe(false);
+        expect(pattern.lastIndex).toBe(1);
+      }
+    );
+
+    it('should allow an array to contain the same RegExp twice', () => {
+      const pattern = /hello/g;
+
+      expect(validatePattern('hello', [pattern, pattern]).pass).toBe(true);
+    });
+
+    it.each(['g', 'gi'])(
+      'should reuse /hello/%s for case-insensitive checks',
+      (flags) => {
+        const pattern = new RegExp('hello', flags);
+        const options = { caseSensitive: false };
+
+        expect(validatePattern('HELLO', pattern, options).pass).toBe(true);
+        expect(validatePattern('HELLO', pattern, options).pass).toBe(true);
+        expect(pattern.lastIndex).toBe(0);
+      }
+    );
+
+    it('should keep sticky matches at the start of the response', () => {
+      expect(validatePattern('xhello', /hello/y).pass).toBe(false);
+      expect(
+        validatePattern('xHELLO', /hello/y, { caseSensitive: false }).pass
+      ).toBe(false);
+    });
+  });
+
   describe('case sensitivity', () => {
     it('should be case-sensitive by default', () => {
       const result = validatePattern('Hello World', /hello/);
